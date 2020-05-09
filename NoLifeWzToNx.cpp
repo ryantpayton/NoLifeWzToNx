@@ -544,6 +544,26 @@ struct wztonx {
         pn.data = nr.data;
         return true;
     }
+    bool resolve_outlink(std::vector<id_t> link) {
+        auto & n = nodes[link.back()];
+        link.pop_back();
+        auto & s = strings[n.data.string];
+        std::istringstream stream(s);
+        std::vector<std::string> parts;
+        std::string segment;
+        while (std::getline(stream, segment, '/'))
+            parts.push_back(segment);
+        if (parts[0] == "Map")
+            return true;
+        id_t r = 0;
+        for (auto const & part : parts)
+            r = get_child_full(r, part);
+        if (r == 0) return false;
+        auto & nr = nodes[r];
+        auto & pn = nodes[link.back()];
+        pn.data = nr.data;
+        return true;
+    }
     bool resolve_inlink(std::vector<id_t> link) {
         auto & n = nodes[link.back()];
         link.pop_back();
@@ -562,17 +582,9 @@ struct wztonx {
                 r = get_child_full(r, part);
                 if (r == 0) break;
             }
-            //for (id_t i = link.back(); i < p.num; i++) {
-            //    auto & t = nodes[i];
-            //    auto & tn = strings[t.name];
-            //    for (auto const & part : parts) {
-            //        r = get_child_full(i, part);
-            //        if (r == 0) break;
-            //    }
-            //    if (r != 0) break;
-            //}
             if (r != 0) break;
             link.pop_back();
+            if (link.size() == 0) break;
             r = link.back();
         }
         if (r == 0) return false;
@@ -709,7 +721,7 @@ struct wztonx {
                 nn.data_type = node::type::integer;
                 nn.data.integer = i;
                 break;
-            case 0x0B: // Todo - Check if 0x0B really is a 16bit int
+            case 0x0B: // TODO: Check if 0x0B really is a 16bit int
             case 0x02:
                 nn.data_type = node::type::integer;
                 nn.data.integer = in.read<uint16_t>();
@@ -828,19 +840,21 @@ struct wztonx {
             if (diff == 0) break;
         }
         for (auto & it : links) source_fail(it, "source");
+        links.clear();
         std::cout << "Done!" << std::endl;
         //_outlink
         std::cout << "Parsing _outlink....";
         find_links(0, "_outlink");
         for (;;) {
             auto it = std::remove_if(links.begin(), links.end(), [this](std::vector<id_t> const & v) {
-                return resolve_source(v);
+                return resolve_outlink(v);
                 });
             auto diff = links.end() - it;
             links.erase(it, links.end());
             if (diff == 0) break;
         }
         for (auto & it : links) source_fail(it, "_outlink");
+        links.clear();
         std::cout << "Done!" << std::endl;
         //_inlink
         std::cout << "Parsing _inlink.....";
@@ -854,6 +868,7 @@ struct wztonx {
             if (diff == 0) break;
         }
         for (auto & it : links) source_fail(it, "_inlink");
+        links.clear();
         std::cout << "Done!" << std::endl;
     }
     void calculate_offsets() {
