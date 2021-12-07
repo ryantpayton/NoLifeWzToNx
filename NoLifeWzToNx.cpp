@@ -1073,6 +1073,7 @@ struct wztonx {
             switch (f1) {
             case 1: check *= 2; break;
             case 2: break;
+            case 257: check *= 2; break; // Not sure if this is accurate
             case 513: check *= 2; break;
             case 1026: check *= 4; break;
             case 2050: check *= 4; break;
