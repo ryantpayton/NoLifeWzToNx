@@ -22,4 +22,7 @@ A C++ project to convert WZ files to NX files
 - [LZ4](https://github.com/lz4/lz4/releases)
 - [zlib](https://github.com/maxirmx/Dist_zlib)
 
+# NX Format
+- https://nxformat.github.io/
+
 [Windows 8.1 SDK]:   https://developer.microsoft.com/en-us/windows/downloads/sdk-archive
