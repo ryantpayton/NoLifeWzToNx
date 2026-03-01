@@ -23,10 +23,12 @@ A command-line tool written in C++ that converts MapleStory **WZ** (and **IMG**)
 1. Open **NoLifeWzToNx.sln** in Visual Studio.
 2. Verify the project is configured for **Windows SDK 8.1** and **Platform Toolset v140**:
    - Right-click the **NoLifeWzToNx** project → **Properties**
-   - Confirm **Configuration: Debug** and **Platform: x64**
-3. Build the solution: **Build → Build Solution** (or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>).
+   - Confirm **Platform: x64**
+3. Build the solution in **Release** mode for best performance: **Build → Build Solution** (or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>).
 
-The compiled binary will be placed in `x64/Debug/`.
+The compiled binary will be placed in `x64/Release/`.
+
+> **Tip:** Release mode is **significantly** faster than Debug — file conversions that take minutes in Debug finish in seconds in Release.
 
 ---
 
@@ -34,33 +36,64 @@ The compiled binary will be placed in `x64/Debug/`.
 
 ### 1. Prepare your WZ files
 
-Place your `.wz` files inside `x64/Debug/files/` (create the `files` folder if it doesn't exist).
+Place your `.wz` files inside the `files/` folder in the project root (create it if it doesn't exist).
 
 > **⚠ Warning:** Do **not** include `Data.wz` in the conversion. It is not a standard WZ file and will cause errors.
 
-### 2. Run the converter
+### 2. Convert WZ to NX
 
 **Option A — Using the batch file (recommended)**
 
 Double-click **convert.bat** in the project root. It runs:
 
 ```
-x64\Debug\NoLifeWzToNx x64\Debug\files -c
+x64\Release\NoLifeWzToNx files -c
 ```
 
-**Option B — From Visual Studio**
-
-1. Right-click the **NoLifeWzToNx** project → **Properties** → **Debugging**.
-2. Set **Command Arguments** to `$(OutDir)files -c`.
-3. Press <kbd>F5</kbd> (or **Debug → Start Debugging**).
-
-**Option C — From the command line**
+**Option B — From the command line**
 
 ```
 NoLifeWzToNx <path> [options]
 ```
 
 `<path>` can be a single `.wz`/`.img` file **or** a directory (all files within it will be converted recursively).
+
+**Convert a single file:**
+```
+x64\Release\NoLifeWzToNx files\Base.wz -c
+```
+
+**Convert all files in a folder:**
+```
+x64\Release\NoLifeWzToNx files -c
+```
+
+### 3. View WZ file information
+
+To check the format and version of your WZ files without converting them:
+
+**Option A — Using the batch file**
+
+Double-click **info.bat** in the project root.
+
+**Option B — From the command line**
+
+```
+NoLifeWzToNx <path> -i
+```
+
+Example output:
+```
+File: files\Base.wz
+Description: Package file v1.0 Copyright 2002 Wizet, ZMS
+Data offset: 0x3c
+Format: New (64-bit, no version hash)
+Version: Cannot be determined from file
+         (New format WZ files do not store the patch version.)
+         Likely v170+ / v200+ era client.
+```
+
+For legacy WZ files (pre-v170), the tool will brute-force the encrypted version hash and report candidate version numbers.
 
 ### Command-line options
 
@@ -69,10 +102,18 @@ NoLifeWzToNx <path> [options]
 | `-c`, `--client` | Convert in **client** mode (includes image/sound data) |
 | `-s`, `--server` | Convert in **server** mode (skips image/sound data) |
 | `-h`, `--lz4hc` | Use **LZ4 HC** (high-compression) for smaller output files at the cost of slower conversion |
+| `-i`, `--info` | Display WZ file information (format, version) without converting |
 
 ### Output
 
 Each `.wz` file produces a corresponding `.nx` file in the same directory. Conversion time is printed to the console when complete.
+
+### WZ format compatibility
+
+| Format | Versions | Status |
+|---|---|---|
+| Legacy (with version hash) | Pre-v170 (e.g. v83, v112) | Supported |
+| New 64-bit (no version hash) | v170+ / v200+ era | Supported |
 
 Files have been successfully converted and tested using **MapleStory v229.2**.
 
@@ -100,4 +141,4 @@ Full documentation for the NX binary format is available at **[nxformat.github.i
 
 This project is licensed under the **GNU Affero General Public License v3.0** — see the source file headers for details.
 
-Copyright &copy; 2014–2020 Peter Atashian, Ryan Payton
+Copyright &copy; 2014-2020 Peter Atashian, Ryan Payton

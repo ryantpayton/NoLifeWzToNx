@@ -2,6 +2,9 @@
 /.vs
 /x64
 /x86
+/files
 
 *.log
 *.vcxproj.user
+*.wz
+*.nx

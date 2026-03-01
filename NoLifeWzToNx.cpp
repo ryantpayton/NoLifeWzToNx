@@ -307,6 +307,21 @@ struct bitmap {
     uint64_t data;
     uint8_t const * key;
 };
+// WZ version hash helpers
+static uint32_t compute_version_hash(int version) {
+    uint32_t hash = 0;
+    auto s = std::to_string(version);
+    for (char c : s)
+        hash = hash * 32 + static_cast<uint8_t>(c) + 1;
+    return hash;
+}
+static uint8_t derive_header_byte(uint32_t hash) {
+    return static_cast<uint8_t>(~(
+        ((hash >> 24) & 0xFF) ^
+        ((hash >> 16) & 0xFF) ^
+        ((hash >> 8) & 0xFF) ^
+        (hash & 0xFF)));
+}
 // The main class itself
 struct wztonx {
     // Variables
@@ -325,6 +340,7 @@ struct wztonx {
     char16_t const * u16key = nullptr;
     std::vector<std::pair<id_t, int32_t>> imgs;
     size_t file_start = 0;
+    bool new_wz_format = false;
     std::vector<id_t> uol_path;
     std::vector<std::vector<id_t>> uols;
     std::vector<id_t> link_path;
@@ -393,6 +409,7 @@ struct wztonx {
             }
             if (std::any_of(str_buf.begin(), str_buf.end(),
                 [](char const & c) { return static_cast<uint8_t>(c) >= 0x80; })) {
+                wstr_buf.clear();
                 std::transform(str_buf.cbegin(), str_buf.cend(), std::back_inserter(wstr_buf),
                     [](char c) { return cp1252[static_cast<unsigned char>(c)]; });
                 return add_string(convert_str(wstr_buf));
@@ -626,7 +643,7 @@ struct wztonx {
             {
                 auto s = in.read<int32_t>();
                 auto p = in.tell();
-                in.seek(file_start + s);
+                in.seek(file_start + s + (new_wz_format ? 1 : 0));
                 type = in.read<uint8_t>();
                 nn.name = read_enc_string();
                 in.seek(p);
@@ -788,10 +805,73 @@ struct wztonx {
         for (auto i = 0u; i < slen; ++i) {
             str_buf[i] = static_cast<char8_t>(os[i] ^ u8key[i]);
         }
+        in.skip(slen);
         auto string = add_string(str_buf);
         auto & n = nodes[script_node];
         n.data_type = node::type::string;
         n.data.string = string;
+    }
+    void detect_version() {
+        auto log = [](std::string const & s) {
+            std::cout << s;
+            std::cerr << s;
+        };
+        in.open(wzfilename);
+        auto magic = in.read<uint32_t>();
+        if (magic != 0x31474B50) throw std::runtime_error("Not a valid WZ file");
+        in.skip(8);
+        file_start = in.read<uint32_t>();
+        // Read description string (from byte 16 up to file_start)
+        std::string description;
+        if (file_start > 16) {
+            auto desc_len = file_start - 16;
+            auto desc_ptr = in.base + 16;
+            for (size_t i = 0; i < desc_len && desc_ptr[i] != '\0'; ++i)
+                description += desc_ptr[i];
+        }
+        std::ostringstream oss;
+        oss << "File: " << wzfilename << "\n";
+        oss << "Description: " << (description.empty() ? "(none)" : description) << "\n";
+        oss << "Data offset: 0x" << std::hex << file_start << std::dec << "\n";
+        // Detect new vs legacy format
+        in.seek(file_start);
+        auto first_bytes = in.read<uint16_t>();
+        in.seek(file_start);
+        auto count = in.read_cint();
+        auto type_byte = in.read<uint8_t>();
+        if (count > 0 && type_byte >= 1 && type_byte <= 4) {
+            oss << "Format: New (64-bit, no version hash)\n";
+            oss << "Version: Cannot be determined from file\n";
+            oss << "         (New format WZ files do not store the patch version.)\n";
+            oss << "         Likely v170+ / v200+ era client.\n";
+        } else {
+            auto stored_header = first_bytes;
+            auto header_byte = static_cast<uint8_t>(stored_header & 0xFF);
+            oss << "Format: Legacy (with version hash)\n";
+            oss << "Version hash: 0x" << std::hex << stored_header << std::dec << "\n";
+            std::vector<int> candidates;
+            for (int v = 0; v < 1000; ++v) {
+                auto hash = compute_version_hash(v);
+                if (derive_header_byte(hash) == header_byte)
+                    candidates.push_back(v);
+            }
+            if (candidates.empty()) {
+                oss << "Version: Unknown (no matching version found)\n";
+            } else if (candidates.size() == 1) {
+                oss << "Version: v" << candidates[0] << "\n";
+            } else {
+                oss << "Version candidates: ";
+                for (size_t i = 0; i < candidates.size(); ++i) {
+                    if (i > 0) oss << ", ";
+                    oss << "v" << candidates[i];
+                }
+                oss << "\n";
+                oss << "         (Multiple versions produce the same hash.\n";
+                oss << "          Use your client version to identify the correct one.)\n";
+            }
+        }
+        oss << "\n";
+        log(oss.str());
     }
     virtual void parse_file() {
         std::cerr << "Working on " << wzfilename << std::endl;
@@ -801,12 +881,28 @@ struct wztonx {
         if (magic != 0x31474B50) throw std::runtime_error("Not a valid WZ file");
         in.skip(8);
         file_start = in.read<uint32_t>();
-        // Just skip the copyright string
-        in.seek(file_start + 2);
+        // Detect new format (no version hash) vs legacy (2-byte version hash at file_start).
+        // New format used by modern clients (GMS ~v170+): directory data starts at file_start.
+        // Legacy format: 2-byte version hash at file_start, directory at file_start + 2.
+        // Detection: at file_start, if the first compressed-int is a valid positive count
+        // and the next byte is a valid entry type (1-4), it's the new format.
+        size_t dir_start = file_start;
+        in.seek(file_start);
+        {
+            auto count = in.read_cint();
+            auto type_byte = in.read<uint8_t>();
+            if (count <= 0 || type_byte < 1 || type_byte > 4) {
+                dir_start = file_start + 2;
+                new_wz_format = false;
+            } else {
+                new_wz_format = true;
+            }
+        }
+        in.seek(dir_start);
         in.read_cint();
         in.skip(1);
         deduce_key();
-        in.seek(file_start + 2);
+        in.seek(dir_start);
         add_string({});
         directory(0);
         for (auto & it : imgs) img(it.first, it.second);
@@ -984,16 +1080,17 @@ struct wztonx {
             auto n1 = in.read<uint32_t>();
             if (n1) {
                 std::cerr << "non-zero n1: "
-                    << "0x" << std::setfill('0') << std::setw(8) << std::hex << n1;
-                throw std::runtime_error{"fak"};
+                    << "0x" << std::setfill('0') << std::setw(8) << std::hex << n1
+                    << " at bitmap " << std::dec << index << std::endl;
+                throw std::runtime_error("non-zero n1 in bitmap " + std::to_string(index));
             }
             auto length = in.read<uint32_t>();
             auto n2 = static_cast<unsigned>(in.read<uint8_t>());
             if (n2) {
                 std::cerr << "non-zero n2: "
                     << " 0x" << std::setfill('0') << std::setw(2) << std::hex
-                    << n2 << std::endl;
-                throw std::runtime_error{"fak"};
+                    << n2 << " at bitmap " << std::dec << index << std::endl;
+                throw std::runtime_error("non-zero n2 in bitmap " + std::to_string(index));
             }
             auto size = width * height * 4;
             auto biggest = std::max(static_cast<uint32_t>(size), length);
@@ -1010,8 +1107,9 @@ struct wztonx {
                 strm.next_out = output.data();
                 strm.avail_out = static_cast<unsigned>(output.size());
                 auto err = inflate(&strm, Z_FINISH);
-                if (err != Z_BUF_ERROR) {
+                if (err != Z_BUF_ERROR && err != Z_STREAM_END) {
                     if (err != Z_DATA_ERROR) { std::cerr << "zlib error of " << std::dec << err << std::endl; }
+                    inflateEnd(&strm);
                     return false;
                 }
                 decompressed = static_cast<int>(strm.total_out);
@@ -1150,10 +1248,10 @@ struct wztonx {
     wztonx(sys::path filename, bool client, bool hc) : client(client), hc(hc) {
         wzfilename = u8string(filename);
         nxfilename = u8string(filename.replace_extension(".nx"));
-        if (!std::ifstream{wzfilename}.is_open()) { return; }
-        std::cout << wzfilename << " -> " << nxfilename << std::endl;
     }
     void convert_file() {
+        if (!std::ifstream{wzfilename}.is_open()) { return; }
+        std::cout << wzfilename << " -> " << nxfilename << std::endl;
         parse_file();
         open_output();
         write_nodes();
@@ -1191,6 +1289,7 @@ Converts WZ files into NX files
     std::vector<std::string> args{argv + 1, argv + argc};
     enum { client, server, none } type{none};
     bool hc{false};
+    bool info_only{false};
     std::vector<sys::path> paths;
     std::regex reg1{"--([a-z]+)"};
     std::regex reg2{"-([a-z]+)"};
@@ -1205,17 +1304,37 @@ Converts WZ files into NX files
         } else if (arg == "--server" || arg == "-s") {
             type = server;
         } else if (arg == "--lz4hc" || arg == "-h") { hc = true; }
+        else if (arg == "--info" || arg == "-i") { info_only = true; }
     }
+    auto show_info = [&](sys::path const & p) {
+        try {
+            if (u8string(p.extension()) == ".wz") {
+                nl::wztonx{p, false, false}.detect_version();
+            }
+        } catch (std::exception const & e) {
+            std::cerr << "Error reading " << u8string(p) << ": " << e.what() << std::endl;
+            std::cout << "Error reading " << u8string(p) << ": " << e.what() << std::endl;
+        }
+    };
     auto convert = [&](sys::path const & p) {
-        if (u8string(p.extension()) == ".img") {
-            nl::imgtonx{p, type == client, hc}.convert_file();
-        } else if (u8string(p.extension()) == ".wz") {
-            nl::wztonx{p, type == client, hc}.convert_file();
+        try {
+            if (u8string(p.extension()) == ".img") {
+                nl::imgtonx{p, type == client, hc}.convert_file();
+            } else if (u8string(p.extension()) == ".wz") {
+                nl::wztonx{p, type == client, hc}.convert_file();
+            }
+        } catch (std::exception const & e) {
+            std::cerr << "Error converting " << u8string(p) << ": " << e.what() << std::endl;
+            std::cout << "\nError converting " << u8string(p) << ": " << e.what() << std::endl;
         }
     };
     for (auto & p : paths) {
-        if (sys::is_regular_file(p)) { convert(p); } else if (sys::is_directory(p)) {
-            for (sys::recursive_directory_iterator it{p}, end{}; it != end; ++it) { convert(*it); }
+        if (sys::is_regular_file(p)) {
+            if (info_only) show_info(p); else convert(p);
+        } else if (sys::is_directory(p)) {
+            for (sys::recursive_directory_iterator it{p}, end{}; it != end; ++it) {
+                if (info_only) show_info(*it); else convert(*it);
+            }
         }
     }
     auto b = std::chrono::high_resolution_clock::now();
